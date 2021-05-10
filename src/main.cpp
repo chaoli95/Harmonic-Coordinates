@@ -1,5 +1,6 @@
 #include <igl/opengl/glfw/Viewer.h>
 #include <iostream>
+#include <float.h>
 #include <igl/readOFF.h>
 #include <igl//boundary_loop.h>
 #include <igl/slice.h>
@@ -18,6 +19,9 @@ Eigen::MatrixXi F;
 Eigen::MatrixXd Vc;
 Eigen::MatrixXi Fc;
 Eigen::MatrixXi H;
+// interior control mesh
+Eigen::MatrixXd Vi;
+Eigen::MatrixXi Fi;
 // triangulates inside the cage
 Eigen::MatrixXd Vt;
 Eigen::MatrixXi Ft;
@@ -35,13 +39,17 @@ double selection_threshold;
 
 void calculate_coordinate(igl::opengl::glfw::Viewer& viewer);
 
-int nearest_cage_vertex(Eigen::Vector3d &click_point)
+int nearest_control_vertex(Eigen::Vector3d &click_point)
 {
   Eigen::RowVector2d click_point_2d(click_point(0), click_point(1));
-  int index;
-  double dist = (Vc.rowwise() - click_point_2d).rowwise().squaredNorm().minCoeff(&index);
+  int cage_index;
+  double cage_dist = (Vc.rowwise() - click_point_2d).rowwise().squaredNorm().minCoeff(&cage_index);
+  int interior_index;
+  double interior_dist = Vi.rows()>0 ? (Vi.rowwise() - click_point_2d).rowwise().squaredNorm().minCoeff(&interior_index) : DBL_MAX;
+  double dist = std::min(cage_dist, interior_dist);
   if (dist > selection_threshold)
-    index = -1;
+    return -1;
+  int index = cage_dist < interior_dist ? cage_index : Vc.rows() + interior_index;
   return index;
 }
 
@@ -62,7 +70,7 @@ bool callback_mouse_down(igl::opengl::glfw::Viewer& viewer, int button, int modi
     Z
   );
   // cout << Z << endl;
-  int idx = nearest_cage_vertex(Z);
+  int idx = nearest_control_vertex(Z);
   if (idx < 0)
     return false;
   if (display_mode == ViewWeights)
@@ -97,7 +105,13 @@ bool callback_mouse_move(igl::opengl::glfw::Viewer& viewer, int mouse_x, int mou
   Eigen::Vector2d translation = current_mouse_coordinate - previous_mouse_coordinate;
   // cout << "before: " << Vc.row(picked_cage_vertex) << endl;
   previous_mouse_coordinate = current_mouse_coordinate;
-  Vc.row(picked_cage_vertex) += translation;
+  if (picked_cage_vertex < Vc.rows())
+  {
+    Vc.row(picked_cage_vertex) += translation;
+  } else
+  {
+    Vi.row(picked_cage_vertex - Vc.rows()) += translation;
+  }
   
   // cout << "after: " << Vc.row(picked_cage_vertex) << endl;
   calculate_coordinate(viewer);
@@ -142,17 +156,38 @@ bool callback_key_down(igl::opengl::glfw::Viewer& viewer, unsigned char key, int
         Eigen::RowVector3d(1,0,0)
       );
     }
+    viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
+    for (int i = 0; i < Fi.rows(); ++i)
+    {
+      viewer.data().add_edges(
+        Vi.row(Fi(i, 0)),
+        Vi.row(Fi(i, 1)),
+        Eigen::RowVector3d(0,1,0)
+      );
+    }
     viewer.data().set_face_based(true);
     handled = true;
   }
   if (key == '2' && display_mode != ViewWeights)
   {
     display_mode = ViewWeights;
-    Vt << Vc, V;
+    Vt << Vc, Vi, V;
     viewer.data().clear();
     viewer.data().set_mesh(Vt, Ft);
+    cout << Vt.rows() << endl;
+    cout << weights.rows() << endl;
+    cout << weights.cols() << endl;
     viewer.data().set_data(weights.row(current_cage_index));
     viewer.data().set_face_based(false);
+    viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
+    for (int i = 0; i < Fi.rows(); ++i)
+    {
+      viewer.data().add_edges(
+        Vi.row(Fi(i, 0)),
+        Vi.row(Fi(i, 1)),
+        Eigen::RowVector3d(0,1,0)
+      );
+    }
     handled = true;
   }
   // if (key == ' ')
@@ -179,9 +214,12 @@ void calculate_coordinate(igl::opengl::glfw::Viewer& viewer)
   V.setZero();
   for (int i = 0; i < V.rows(); ++i)
   {
-    for (int j = 0; j < Vc.rows(); ++j)
+    for (int j = 0; j < Vc.rows()+Vi.rows(); ++j)
     {
-      V.row(i) += weights(j, i+Vc.rows()) * Vc.row(j);
+      if (j < Vc.rows())
+        V.row(i) += weights(j, i+Vc.rows()+Vi.rows()) * Vc.row(j);
+      else 
+        V.row(i) += weights(j, i + Vc.rows() + Vi.rows()) * Vi.row(j-Vc.rows());
     }
   }
 
@@ -196,6 +234,15 @@ void calculate_coordinate(igl::opengl::glfw::Viewer& viewer)
       Eigen::RowVector3d(1,0,0)
     );
   } 
+  viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
+    for (int i = 0; i < Fi.rows(); ++i)
+    {
+      viewer.data().add_edges(
+        Vi.row(Fi(i, 0)),
+        Vi.row(Fi(i, 1)),
+        Eigen::RowVector3d(0,1,0)
+      );
+    }
 
   // double error = 0;
   // Eigen::MatrixXd tmp_V;
@@ -244,15 +291,20 @@ void calculate_coordinate(igl::opengl::glfw::Viewer& viewer)
 void calculate_harmonic_function() 
 {
   // triangulate the cage
-  int cage_vertex_num = Vc.rows();
+  int cage_vertex_num = Vc.rows()+Vi.rows();
 
-  Eigen::MatrixXd points(Vc.rows() + V.rows(), 2);
-  points << Vc, V;
+  Eigen::MatrixXd points(Vc.rows() + Vi.rows() + V.rows(), 2);
+  points << Vc, Vi, V;
   igl::triangle::triangulate(points, Fc, H, "", Vt, Ft);
+
+  cout << Vt.rows() << endl;
+  cout << Vc.rows() << endl;
+  cout << Vi.rows() << endl;
+  cout << V.rows() << endl;
 
   // igl::triangle::triangulate(Vc, Fc, H, "q", Vt, Ft);
 
-  weights.resize(Vc.rows(), Vt.rows());
+  weights.resize(Vc.rows()+Vi.rows(), Vt.rows());
 
   // Set up linear solver
   Eigen::VectorXi free_vertices, cage_vertices;
@@ -289,7 +341,7 @@ void calculate_harmonic_function()
   assert(solver.info() == Eigen::Success);
   
   Eigen::VectorXd phi(cage_vertex_num);
-  for (int i = 0; i < Vc.rows(); ++i) 
+  for (int i = 0; i < cage_vertex_num; ++i) 
   {
     phi.setZero();
     phi(i) = 1;
@@ -313,11 +365,12 @@ void calculate_harmonic_function()
     // cout << blah.minCoeff() << endl;
     // cout << Eigen::RowVectorXd(weights.row(i)) << endl;
   }
+  cout << weights.colwise().sum() << endl;
 }
 
 int main(int argc, char *argv[])
 {
-  if (argc != 3)
+  if (argc < 3)
   {
     std::cout << "Usage harmonic-coordinates mesh.off cage.off" << std::endl;
     exit(0);
@@ -326,7 +379,16 @@ int main(int argc, char *argv[])
   assert(V.rows() > 0);
   // Eigen::MatrixXd Vc_tmp, Fc_tmp;
   igl::readOFF(argv[2], Vc, Fc);
-  cout << Fc << endl;
+
+  if (argc == 4)
+  {
+    igl::readOFF(argv[3], Vi, Fi);
+    Vi.conservativeResize(Vi.rows(), 2);
+    cout << Fi << endl;
+  } else
+  {
+    Vi.resize(0,2);
+  }
 
   V.conservativeResize(V.rows(), 2);
   Vc.conservativeResize(Vc.rows(), 2);
@@ -354,6 +416,15 @@ int main(int argc, char *argv[])
       Vc.row(Fc(i, 0)),
       Vc.row(Fc(i, 1)),
       Eigen::RowVector3d(1,0,0)
+    );
+  }
+  viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
+  for (int i = 0; i < Fi.rows(); ++i)
+  {
+    viewer.data().add_edges(
+      Vi.row(Fi(i, 0)),
+      Vi.row(Fi(i, 1)),
+      Eigen::RowVector3d(0,1,0)
     );
   }
   viewer.data().set_face_based(true);
