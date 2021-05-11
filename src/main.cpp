@@ -27,9 +27,10 @@ Eigen::MatrixXi Fi;
 // triangulates inside the cage
 Eigen::MatrixXd Vt;
 Eigen::MatrixXi Ft;
-// h_i(p)
+// weight function
 Eigen::MatrixXd weight;
 Eigen::MatrixXd harmonic_weight;
+Eigen::MatrixXd mean_weight;
 // used for display 
 int current_cage_index = 0;
 // used for deform
@@ -142,19 +143,6 @@ bool callback_mouse_up(igl::opengl::glfw::Viewer& viewer, int button, int modifi
   picked_cage_vertex = -1;
   return true;
 }
-
-// bool callback_pre_draw(igl::opengl::glfw::Viewer& viewer)
-// {
-//   if (display_mode == Viewweight)
-//   {
-
-//   }
-//   if (display_mode == Deform)
-//   {
-
-//   }
-//   return false;
-// }
 
 bool callback_key_down(igl::opengl::glfw::Viewer& viewer, unsigned char key, int modifiers)
 {
@@ -326,6 +314,39 @@ void calculate_harmonic_function()
   // cout << weight << endl;
 }
 
+void calculate_mean_coordinates_function()
+{
+  mean_weight.resize(Vc.rows(), V.rows());
+  for (int i = 0; i < V.rows(); ++i)
+  {
+    Eigen::MatrixXd vectors = Vc.rowwise() - V.row(i);
+    Eigen::MatrixX3d vectors3d;
+    vectors3d.resize(vectors.rows(), 3);
+    vectors3d.col(0) << vectors.col(0);
+    vectors3d.col(1) << vectors.col(1);
+    vectors3d.col(2).setZero();
+    vectors3d.rowwise().normalize();
+    // cout << vectors3d.rowwise().norm() << endl;
+    Eigen::VectorXd tangents(vectors.rows());
+    for (int j = 0; j < tangents.size(); ++j)
+    {
+      Eigen::Vector3d curr = vectors3d.row(j);
+      Eigen::Vector3d next = vectors3d.row((j+1)%vectors3d.rows());
+      Eigen::Vector3d middle = curr+next;
+      double sin = curr.cross(middle).norm();
+      double cos = curr.dot(middle);
+      tangents(j) = sin/cos;
+    }
+    // cout << tangents << endl;
+    for (int j = 0; j < Vc.rows(); ++j)
+    {
+      mean_weight(j,i) = (tangents(j) + tangents((j+Vc.rows()-1)%Vc.rows()))/vectors.row(j).norm();
+    }
+    mean_weight.col(i) /= mean_weight.col(i).sum();
+  }
+  // cout << mean_weight.colwise().sum() << endl;
+}
+
 int main(int argc, char *argv[])
 {
   if (argc < 3)
@@ -354,6 +375,7 @@ int main(int argc, char *argv[])
 
   // pre computation  
   calculate_harmonic_function();
+  calculate_mean_coordinates_function();
   // calculate_coordinate();
   calculate_selection_threshold();
   // V.conservativeResize(V.rows(), 3);
