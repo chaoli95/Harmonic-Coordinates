@@ -10,6 +10,8 @@
 #include <igl/barycentric_interpolation.h>
 #include <igl/unproject_on_plane.h>
 
+// #define SIMPLEST_TRIANGULATION
+
 using namespace std;
 
 // original mesh
@@ -26,18 +28,20 @@ Eigen::MatrixXi Fi;
 Eigen::MatrixXd Vt;
 Eigen::MatrixXi Ft;
 // h_i(p)
-Eigen::MatrixXd weights;
+Eigen::MatrixXd weight;
+Eigen::MatrixXd harmonic_weight;
 // used for display 
-enum DisplayMode {ViewWeights, Deform};
-DisplayMode display_mode = Deform;
 int current_cage_index = 0;
 // used for deform
 Eigen::Vector2d previous_mouse_coordinate;
 int picked_cage_vertex;
 bool doit = false;
 double selection_threshold;
+int original_mesh, cage_mesh;
+unsigned int left_view, right_view;
 
 void calculate_coordinate(igl::opengl::glfw::Viewer& viewer);
+void update_mesh(igl::opengl::glfw::Viewer& viewer);
 
 int nearest_control_vertex(Eigen::Vector3d &click_point)
 {
@@ -60,30 +64,42 @@ bool callback_mouse_down(igl::opengl::glfw::Viewer& viewer, int button, int modi
     // cout << "right click" << endl;
     return false;
   }
+  bool click_left = viewer.current_mouse_x < viewer.core(left_view).viewport(3);
   Eigen::Vector3d Z;
-  // example 708
-  igl::unproject_on_plane(
-    Eigen::Vector2i(viewer.current_mouse_x, viewer.core().viewport(3) - viewer.current_mouse_y),
-    viewer.core().proj * viewer.core().view,
-    viewer.core().viewport,
-    Eigen::Vector4d(0,0,1,0),
-    Z
-  );
-  // cout << Z << endl;
+  if (click_left)
+  { 
+    // example 708
+    igl::unproject_on_plane(
+      Eigen::Vector2i(viewer.current_mouse_x, viewer.core(left_view).viewport(3) - viewer.current_mouse_y),
+      viewer.core(left_view).proj * viewer.core(left_view).view,
+      viewer.core(left_view).viewport,
+      Eigen::Vector4d(0,0,1,0),
+      Z
+    );
+  } else 
+  {
+    igl::unproject_on_plane(
+      Eigen::Vector2i(viewer.current_mouse_x, viewer.core(right_view).viewport(3) - viewer.current_mouse_y),
+      viewer.core(right_view).proj * viewer.core(right_view).view,
+      viewer.core(right_view).viewport,
+      Eigen::Vector4d(0,0,1,0),
+      Z
+    ); 
+  }
   int idx = nearest_control_vertex(Z);
   if (idx < 0)
     return false;
-  if (display_mode == ViewWeights)
-  {
-    current_cage_index = idx;
-    viewer.data().set_data(weights.row(current_cage_index));
-    doit = false;
-  }
-  if (display_mode == Deform)
+  current_cage_index = idx;
+  if (click_left)
   {
     picked_cage_vertex = idx;
     previous_mouse_coordinate << Z(0), Z(1);
     doit = true;
+  } else
+  {
+    viewer.data(cage_mesh).set_data(weight.row(current_cage_index));
+    doit = false; 
+    return true;
   }
 
   return doit;
@@ -95,9 +111,9 @@ bool callback_mouse_move(igl::opengl::glfw::Viewer& viewer, int mouse_x, int mou
 
   Eigen::Vector3d Z;
   igl::unproject_on_plane(
-    Eigen::Vector2i(viewer.current_mouse_x, viewer.core().viewport(3) - viewer.current_mouse_y),
-    viewer.core().proj * viewer.core().view,
-    viewer.core().viewport,
+    Eigen::Vector2i(viewer.current_mouse_x, viewer.core(left_view).viewport(3) - viewer.current_mouse_y),
+    viewer.core(left_view).proj * viewer.core(left_view).view,
+    viewer.core(left_view).viewport,
     Eigen::Vector4d(0, 0, 1, 0),
     Z
   );
@@ -115,6 +131,7 @@ bool callback_mouse_move(igl::opengl::glfw::Viewer& viewer, int mouse_x, int mou
   
   // cout << "after: " << Vc.row(picked_cage_vertex) << endl;
   calculate_coordinate(viewer);
+  update_mesh(viewer);
   return true;
 }
 
@@ -128,7 +145,7 @@ bool callback_mouse_up(igl::opengl::glfw::Viewer& viewer, int button, int modifi
 
 // bool callback_pre_draw(igl::opengl::glfw::Viewer& viewer)
 // {
-//   if (display_mode == ViewWeights)
+//   if (display_mode == Viewweight)
 //   {
 
 //   }
@@ -142,60 +159,6 @@ bool callback_mouse_up(igl::opengl::glfw::Viewer& viewer, int button, int modifi
 bool callback_key_down(igl::opengl::glfw::Viewer& viewer, unsigned char key, int modifiers)
 {
   bool handled = false;
-  if (key == '1' && display_mode != Deform)
-  {
-    display_mode = Deform;
-    viewer.data().clear();
-    viewer.data().set_mesh(V, F);
-    viewer.data().add_points(Vc, Eigen::RowVector3d(1,0,0));
-    for (int i = 0; i < Vc.rows(); ++i)
-    {
-      viewer.data().add_edges(
-        Vc.row(Fc(i, 0)),
-        Vc.row(Fc(i, 1)),
-        Eigen::RowVector3d(1,0,0)
-      );
-    }
-    viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
-    for (int i = 0; i < Fi.rows(); ++i)
-    {
-      viewer.data().add_edges(
-        Vi.row(Fi(i, 0)),
-        Vi.row(Fi(i, 1)),
-        Eigen::RowVector3d(0,1,0)
-      );
-    }
-    viewer.data().set_face_based(true);
-    handled = true;
-  }
-  if (key == '2' && display_mode != ViewWeights)
-  {
-    display_mode = ViewWeights;
-    Vt << Vc, Vi, V;
-    viewer.data().clear();
-    viewer.data().set_mesh(Vt, Ft);
-    cout << Vt.rows() << endl;
-    cout << weights.rows() << endl;
-    cout << weights.cols() << endl;
-    viewer.data().set_data(weights.row(current_cage_index));
-    viewer.data().set_face_based(false);
-    viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
-    for (int i = 0; i < Fi.rows(); ++i)
-    {
-      viewer.data().add_edges(
-        Vi.row(Fi(i, 0)),
-        Vi.row(Fi(i, 1)),
-        Eigen::RowVector3d(0,1,0)
-      );
-    }
-    handled = true;
-  }
-  // if (key == ' ')
-  // {
-  //   current_cage_index = (current_cage_index + 1) % Vc.rows();
-  //   viewer.data().set_data(weights.row(current_cage_index));
-  //   handled = true;
-  // }
   
   return handled;
 }
@@ -217,75 +180,38 @@ void calculate_coordinate(igl::opengl::glfw::Viewer& viewer)
     for (int j = 0; j < Vc.rows()+Vi.rows(); ++j)
     {
       if (j < Vc.rows())
-        V.row(i) += weights(j, i+Vc.rows()+Vi.rows()) * Vc.row(j);
+        V.row(i) += harmonic_weight(j, i) * Vc.row(j);
       else 
-        V.row(i) += weights(j, i + Vc.rows() + Vi.rows()) * Vi.row(j-Vc.rows());
+        V.row(i) += harmonic_weight(j, i) * Vi.row(j-Vc.rows());
     }
   }
+  // Vt << Vc, Vi, V;
+}
 
-  viewer.data().clear();
-  viewer.data().set_mesh(V, F);
-  viewer.data().add_points(Vc, Eigen::RowVector3d(1,0,0));
+void update_mesh(igl::opengl::glfw::Viewer& viewer) 
+{
+  viewer.data(original_mesh).clear();
+  viewer.data(original_mesh).set_mesh(V, F);
+  viewer.data(original_mesh).add_points(Vc, Eigen::RowVector3d(1,0,0));
   for (int i = 0; i < Vc.rows(); ++i)
   {
-    viewer.data().add_edges(
+    viewer.data(original_mesh).add_edges(
       Vc.row(Fc(i, 0)),
       Vc.row(Fc(i, 1)),
       Eigen::RowVector3d(1,0,0)
     );
   } 
-  viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
-    for (int i = 0; i < Fi.rows(); ++i)
-    {
-      viewer.data().add_edges(
-        Vi.row(Fi(i, 0)),
-        Vi.row(Fi(i, 1)),
-        Eigen::RowVector3d(0,1,0)
-      );
-    }
+  viewer.data(original_mesh).add_points(Vi, Eigen::RowVector3d(0,1,0));
+  for (int i = 0; i < Fi.rows(); ++i)
+  {
+    viewer.data(original_mesh).add_edges(
+      Vi.row(Fi(i, 0)),
+      Vi.row(Fi(i, 1)),
+      Eigen::RowVector3d(0,1,0)
+    );
+  }
 
-  // double error = 0;
-  // Eigen::MatrixXd tmp_V;
-  // tmp_V.resizeLike(V);
-  // for (int idx = 0; idx < V.rows(); ++idx)
-  // {
-  //   Eigen::MatrixXd P = V.row(idx).replicate(Ft.rows(), 1);
-  //   Eigen::MatrixXd A, B, C;
-  //   igl::slice(Vt, Ft.col(0), 1, A);
-  //   igl::slice(Vt, Ft.col(1), 1, B);
-  //   igl::slice(Vt, Ft.col(2), 1, C);
-  //   Eigen::MatrixXd barycentric_coordinates;
-  //   igl::barycentric_coordinates(P, A, B, C, barycentric_coordinates);
-  //   int triangle_idx = -1;
-  //   for (int i = 0; i < Ft.rows(); ++i)
-  //   {
-  //     if (barycentric_coordinates(i,0)<=1 && barycentric_coordinates(i,0)>=0 &&
-  //         barycentric_coordinates(i,1)<=1 && barycentric_coordinates(i,1)>=0 &&
-  //         barycentric_coordinates(i,2)<=1 && barycentric_coordinates(i,2)>=0)
-  //     {
-  //       // cout << barycentric_coordinates.row(i) << endl;
-  //       triangle_idx = i;
-  //       break;
-  //     }
-  //   }
-  //   assert(triangle_idx != -1);
-  //   Eigen::VectorXd new_v(2);
-  //   new_v.setZero();
-  //   for (int i = 0; i < weights.rows(); ++i)
-  //   {
-  //     Eigen::VectorXd D = weights.row(i).transpose();
-  //     Eigen::RowVectorXd B = barycentric_coordinates.row(triangle_idx);
-  //     Eigen::VectorXi I(1);
-  //     I << triangle_idx;
-  //     Eigen::MatrixXd tmp;
-  //     igl::barycentric_interpolation(D, Ft, B, I, tmp);
-  //     new_v += tmp(0,0) * Vc.row(i);
-  //   }
-  //   tmp_V.row(idx) = new_v;
-  //   error += (V.row(idx) - Eigen::RowVectorXd(new_v)).norm();
-  // }
-  // cout << error << endl;
-  // V = tmp_V;
+  viewer.data(cage_mesh).set_data(weight.row(current_cage_index));
 }
 
 void calculate_harmonic_function() 
@@ -293,9 +219,15 @@ void calculate_harmonic_function()
   // triangulate the cage
   int cage_vertex_num = Vc.rows()+Vi.rows();
 
+  #ifdef SIMPLEST_TRIANGULATION
+  Eigen::MatrixXd points(Vc.rows() + Vi.rows(), 2);
+  points << Vc, Vi;
+  igl::triangle::triangulate(points, Fc, H, "q", Vt, Ft);
+  #else
   Eigen::MatrixXd points(Vc.rows() + Vi.rows() + V.rows(), 2);
   points << Vc, Vi, V;
   igl::triangle::triangulate(points, Fc, H, "", Vt, Ft);
+  #endif
 
   cout << Vt.rows() << endl;
   cout << Vc.rows() << endl;
@@ -304,7 +236,8 @@ void calculate_harmonic_function()
 
   // igl::triangle::triangulate(Vc, Fc, H, "q", Vt, Ft);
 
-  weights.resize(Vc.rows()+Vi.rows(), Vt.rows());
+  weight.resize(Vc.rows()+Vi.rows(), Vt.rows());
+  harmonic_weight.resize(Vc.rows()+Vi.rows(), V.rows());
 
   // Set up linear solver
   Eigen::VectorXi free_vertices, cage_vertices;
@@ -319,9 +252,6 @@ void calculate_harmonic_function()
     free_vertices[i-cage_vertex_num] = i;
   }
 
-  // cout << Eigen::RowVectorXi(cage_vertices) << endl;
-  // cout << Eigen::RowVectorXi(free_vertices) << endl;
-
   Eigen::SparseMatrix<double> L;
   igl::cotmatrix(Vt, Ft, L);
   Eigen::SparseMatrix<double> M;
@@ -331,7 +261,7 @@ void calculate_harmonic_function()
   // A = (M.cwiseInverse()) * L;
   // L is negative semi-definite
   A = (-L).eval();
-  
+
   Eigen::SparseMatrix<double> A_ff, A_fc;
   igl::slice(A, free_vertices, free_vertices, A_ff);
   igl::slice(A, free_vertices, cage_vertices, A_fc);
@@ -339,7 +269,7 @@ void calculate_harmonic_function()
   Eigen::SimplicialLLT<Eigen::SparseMatrix<double>> solver;
   solver.compute(A_ff);
   assert(solver.info() == Eigen::Success);
-  
+
   Eigen::VectorXd phi(cage_vertex_num);
   for (int i = 0; i < cage_vertex_num; ++i) 
   {
@@ -348,24 +278,52 @@ void calculate_harmonic_function()
     // cout << Eigen::RowVectorXd(phi) << endl;
     // cout << -A_fc * phi << endl;
     Eigen::VectorXd h = solver.solve(-A_fc*phi);
+    // weight.row(i) = h;
     for (int j = 0; j < Vt.rows(); ++j)
     {
       if (j < cage_vertex_num)
-        weights(i, j) = phi(j);
+        weight(i, j) = phi(j);
       else
-        weights(i, j) = h(j - cage_vertex_num);
+        weight(i, j) = h(j - cage_vertex_num);
     } 
-    // Eigen::VectorXd tmp = weights.row(i);
-    // cout << tmp.maxCoeff() << endl;
-    // cout << tmp.minCoeff() << endl;
-    // Eigen::RowVectorXd blah((M.cwiseInverse()) * A * tmp);
-    // cout << blah.rows() << endl;
-    // cout << blah.cols() << endl;
-    // cout << blah.maxCoeff() << endl;
-    // cout << blah.minCoeff() << endl;
-    // cout << Eigen::RowVectorXd(weights.row(i)) << endl;
+    #ifndef SIMPLEST_TRIANGULATION
+    harmonic_weight.row(i) << h.transpose();
+    #endif
   }
-  cout << weights.colwise().sum() << endl;
+  cout << weight.colwise().sum() << endl;
+  #ifdef SIMPLEST_TRIANGULATION
+  Eigen::MatrixXd P1, P2, P3;
+  igl::slice(Vt, Ft.col(0), 1, P1);
+  igl::slice(Vt, Ft.col(1), 1, P2);
+  igl::slice(Vt, Ft.col(2), 1, P3);
+  harmonic_weight.setZero();
+  for (int idx = 0; idx < V.rows(); ++idx)
+  {
+    Eigen::MatrixXd P = V.row(idx).replicate(Ft.rows(), 1);
+    Eigen::MatrixXd bcs;
+    igl::barycentric_coordinates(P, P1, P2, P3, bcs);
+    int triangle_idx = -1;
+    for (int i = 0; i < Ft.rows(); ++i)
+    {
+      if (bcs(i,0)<=1 && bcs(i,0)>=0 &&
+          bcs(i,1)<=1 && bcs(i,1)>=0 &&
+          bcs(i,2)<=1 && bcs(i,2)>=0)
+      {
+        // cout << barycentric_coordinates.row(i) << endl;
+        triangle_idx = i;
+        break;
+      }
+    }
+    assert(triangle_idx != -1);
+    Eigen::RowVector3d bc = bcs.row(triangle_idx);
+    // cout << bc << endl;
+    for (int i = 0; i < weight.rows(); ++i)
+    { 
+      harmonic_weight(i, idx) = bc(0)*weight(i, Ft(triangle_idx, 0)) + bc(1)*weight(i, Ft(triangle_idx, 1)) + bc(2)*weight(i, Ft(triangle_idx, 2));
+    }
+  }
+  #endif
+  // cout << weight << endl;
 }
 
 int main(int argc, char *argv[])
@@ -384,7 +342,7 @@ int main(int argc, char *argv[])
   {
     igl::readOFF(argv[3], Vi, Fi);
     Vi.conservativeResize(Vi.rows(), 2);
-    cout << Fi << endl;
+    // cout << Fi << endl;
   } else
   {
     Vi.resize(0,2);
@@ -403,31 +361,71 @@ int main(int argc, char *argv[])
 
   // Plot the mesh
   igl::opengl::glfw::Viewer viewer;
-  viewer.callback_key_down = callback_key_down;
-  viewer.callback_mouse_down = callback_mouse_down;
-  viewer.callback_mouse_move = callback_mouse_move;
-  viewer.callback_mouse_up = callback_mouse_up;
-
-  viewer.data().set_mesh(V, F);
-  viewer.data().add_points(Vc, Eigen::RowVector3d(1,0,0));
+  original_mesh = viewer.append_mesh(true);
+  cage_mesh = viewer.append_mesh(true);
+  viewer.data(original_mesh).set_mesh(V, F);
+  viewer.data(cage_mesh).set_mesh(Vt, Ft);
+  viewer.callback_init = [&](igl::opengl::glfw::Viewer &)
+  {
+    viewer.core().viewport = Eigen::Vector4f(0, 0, 640, 800);
+    left_view = viewer.core_list[0].id;
+    right_view = viewer.append_core(Eigen::Vector4f(640, 0, 640, 800));
+    viewer.data(original_mesh).set_visible(false, right_view);
+    viewer.data(cage_mesh).set_visible(false, left_view);
+    return true;
+  };
+  viewer.callback_post_resize = [&](igl::opengl::glfw::Viewer &v, int w, int h) 
+  {
+    v.core(left_view).viewport = Eigen::Vector4f(0, 0, w / 2, h);
+    v.core(right_view).viewport = Eigen::Vector4f(w / 2, 0, w - (w / 2), h);
+    return true;
+  };
+  viewer.data(original_mesh).add_points(Vc, Eigen::RowVector3d(1,0,0));
   for (int i = 0; i < Vc.rows(); ++i)
   {
-    viewer.data().add_edges(
+    viewer.data(original_mesh).add_edges(
       Vc.row(Fc(i, 0)),
       Vc.row(Fc(i, 1)),
       Eigen::RowVector3d(1,0,0)
     );
   }
-  viewer.data().add_points(Vi, Eigen::RowVector3d(0,1,0));
+  viewer.data(original_mesh).add_points(Vi, Eigen::RowVector3d(0,1,0));
   for (int i = 0; i < Fi.rows(); ++i)
   {
-    viewer.data().add_edges(
+    viewer.data(original_mesh).add_edges(
       Vi.row(Fi(i, 0)),
       Vi.row(Fi(i, 1)),
       Eigen::RowVector3d(0,1,0)
     );
   }
-  viewer.data().set_face_based(true);
+
+  viewer.data(cage_mesh).set_data(weight.row(current_cage_index));
+  // viewer.data(cage_mesh).add_points(Vc, Eigen::RowVector3d(1,0,0));
+  // for (int i = 0; i < Vc.rows(); ++i)
+  // {
+  //   viewer.data(cage_mesh).add_edges(
+  //     Vc.row(Fc(i, 0)),
+  //     Vc.row(Fc(i, 1)),
+  //     Eigen::RowVector3d(1,0,0)
+  //   );
+  // }
+  viewer.data(cage_mesh).add_points(Vi, Eigen::RowVector3d(0,1,0));
+  for (int i = 0; i < Fi.rows(); ++i)
+  {
+    viewer.data(cage_mesh).add_edges(
+      Vi.row(Fi(i, 0)),
+      Vi.row(Fi(i, 1)),
+      Eigen::RowVector3d(0,1,0)
+    );
+  }
+
+  // viewer.data(cage_mesh).show_lines = false;
+  
+  // viewer.callback_key_down = callback_key_down;
+  viewer.callback_mouse_down = callback_mouse_down;
+  viewer.callback_mouse_move = callback_mouse_move;
+  viewer.callback_mouse_up = callback_mouse_up;
+
 
   viewer.launch();
 }
