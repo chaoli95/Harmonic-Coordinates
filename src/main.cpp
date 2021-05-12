@@ -18,10 +18,12 @@ using namespace std;
 Eigen::MatrixXd V;
 Eigen::MatrixXi F;
 // cage mesh
+Eigen::MatrixXd original_Vc;
 Eigen::MatrixXd Vc;
 Eigen::MatrixXi Fc;
 Eigen::MatrixXi H;
 // interior control mesh
+Eigen::MatrixXd original_Vi;
 Eigen::MatrixXd Vi;
 Eigen::MatrixXi Fi;
 // triangulates inside the cage
@@ -47,17 +49,19 @@ void calculate_coordinate();
 void update_mesh(igl::opengl::glfw::Viewer& viewer);
 void set_original_mesh(igl::opengl::glfw::Viewer& viewer);
 
-int nearest_control_vertex(Eigen::Vector3d &click_point)
+int nearest_control_vertex(Eigen::Vector3d &click_point, bool original_cage)
 {
   Eigen::RowVector2d click_point_2d(click_point(0), click_point(1));
+  Eigen::MatrixXd& cage = original_cage ? original_Vc : Vc;
+  Eigen::MatrixXd& interor = original_cage? original_Vi : Vi;
   int cage_index;
-  double cage_dist = (Vc.rowwise() - click_point_2d).rowwise().squaredNorm().minCoeff(&cage_index);
+  double cage_dist = (cage.rowwise() - click_point_2d).rowwise().squaredNorm().minCoeff(&cage_index);
   int interior_index;
-  double interior_dist = Vi.rows()>0&&coordinate_type==Harmonic ? (Vi.rowwise() - click_point_2d).rowwise().squaredNorm().minCoeff(&interior_index) : DBL_MAX;
+  double interior_dist = interor.rows()>0&&coordinate_type==Harmonic ? (interor.rowwise() - click_point_2d).rowwise().squaredNorm().minCoeff(&interior_index) : DBL_MAX;
   double dist = std::min(cage_dist, interior_dist);
   if (dist > selection_threshold)
     return -1;
-  int index = cage_dist < interior_dist ? cage_index : Vc.rows() + interior_index;
+  int index = cage_dist < interior_dist ? cage_index : cage.rows() + interior_index;
   return index;
 }
 
@@ -68,7 +72,7 @@ bool callback_mouse_down(igl::opengl::glfw::Viewer& viewer, int button, int modi
     // cout << "right click" << endl;
     return false;
   }
-  bool click_left = viewer.current_mouse_x < viewer.core(left_view).viewport(3);
+  bool click_left = viewer.current_mouse_x < viewer.core(left_view).viewport(2);
   Eigen::Vector3d Z;
   if (click_left)
   { 
@@ -90,7 +94,7 @@ bool callback_mouse_down(igl::opengl::glfw::Viewer& viewer, int button, int modi
       Z
     ); 
   }
-  int idx = nearest_control_vertex(Z);
+  int idx = nearest_control_vertex(Z, !click_left);
   if (idx < 0)
     return false;
   current_cage_index = idx;
@@ -279,7 +283,7 @@ void calculate_harmonic_function()
   Eigen::SparseMatrix<double> L;
   igl::cotmatrix(Vt, Ft, L);
   Eigen::SparseMatrix<double> M;
-  igl::massmatrix(Vt, Ft, igl::MASSMATRIX_TYPE_VORONOI, M);
+  igl::massmatrix(Vt, Ft, igl::MASSMATRIX_TYPE_BARYCENTRIC, M);
   // cout << M << endl;
   Eigen::SparseMatrix<double> A;
   // A = (M.cwiseInverse()) * L;
@@ -399,6 +403,11 @@ int main(int argc, char *argv[])
   // Eigen::MatrixXd Vc_tmp, Fc_tmp;
   igl::readOFF(argv[2], Vc, Fc);
 
+  V.conservativeResize(V.rows(), 2);
+  Vc.conservativeResize(Vc.rows(), 2);
+  original_Vc.resizeLike(Vc);
+  original_Vc << Vc;
+
   if (argc == 4)
   {
     igl::readOFF(argv[3], Vi, Fi);
@@ -408,10 +417,8 @@ int main(int argc, char *argv[])
   {
     Vi.resize(0,2);
   }
-
-  V.conservativeResize(V.rows(), 2);
-  Vc.conservativeResize(Vc.rows(), 2);
-  // Vc = Vc_tmp;
+  original_Vi.resizeLike(Vi);
+  original_Vi << Vi;
 
   // pre computation  
   calculate_harmonic_function();
@@ -436,6 +443,7 @@ int main(int argc, char *argv[])
   };
   viewer.callback_post_resize = [&](igl::opengl::glfw::Viewer &v, int w, int h) 
   {
+    // cout << "resize" << endl;
     v.core(left_view).viewport = Eigen::Vector4f(0, 0, w / 2, h);
     v.core(right_view).viewport = Eigen::Vector4f(w / 2, 0, w - (w / 2), h);
     return true;
