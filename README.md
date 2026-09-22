@@ -1,5 +1,8 @@
 # Harmonic Coordinates
 
+![Mean Coordinates](mean.png)
+![Harmonic Coordinates](harmonic.png)
+
 ## Compile
 
     mkdir build
